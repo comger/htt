@@ -4,7 +4,7 @@ import ReactFlow, {
   MarkerType, ReactFlowProvider, useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Database, Activity, Sparkles, Send, Settings, X, Mic, Loader2, Trash2, Library, Network, ShieldCheck, Box, Waypoints, Download, Play, AlertTriangle, TrendingUp, Filter, CheckCircle2 } from 'lucide-react';
+import { Database, Activity, Sparkles, Send, Settings, X, Mic, Loader2, Trash2, Library, Network, ShieldCheck, Box, Waypoints, Download, Play, AlertTriangle, TrendingUp, Filter, CheckCircle2, Bot, Zap, RotateCcw, ChevronRight } from 'lucide-react';
 import axios from 'axios';
 import dagre from 'dagre';
 import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
@@ -734,6 +734,180 @@ function DiagnosisDashboard() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Edge AI Copilot Component
+// ─────────────────────────────────────────────────────────────────────────────
+function EdgeAICopilot({ onAutoClick }) {
+  const [isRunning, setIsRunning] = useState(false);
+  const [actionLog, setActionLog] = useState([]);
+  const [lastAction, setLastAction] = useState(null);
+  const [correctionStatus, setCorrectionStatus] = useState(null);
+  const intervalRef = useRef(null);
+
+  const addLog = (action, status = 'info') => {
+    const entry = { id: Date.now(), time: new Date().toLocaleTimeString(), action, status };
+    setActionLog(prev => [entry, ...prev].slice(0, 30));
+  };
+
+  const executeAction = async (action) => {
+    if (!action || action.action === 'none') return;
+    setLastAction(action);
+    if (action.action === 'click') {
+      addLog(`🖱️ 自主点击节点: ${action.node_id} — ${action.reason}`, 'warning');
+      if (onAutoClick) onAutoClick(action.node_id);
+    } else if (action.action === 'correct_param') {
+      addLog(`⚙️ 发起纠偏: ${action.node_id}.${action.param} → ${action.value}`, 'warning');
+      setCorrectionStatus('applying');
+      try {
+        await axios.post('/api/edge/correct', { node_id: action.node_id, param: action.param, value: action.value });
+        addLog(`✅ 纠偏成功: ${action.node_id}.${action.param} → ${action.value} | ${action.reason}`, 'success');
+        setCorrectionStatus('done');
+        if (onAutoClick) onAutoClick(action.node_id);
+      } catch (e) {
+        addLog(`❌ 纠偏失败: ${e.message}`, 'error');
+        setCorrectionStatus('error');
+      }
+      setTimeout(() => setCorrectionStatus(null), 3000);
+    }
+  };
+
+  const poll = async () => {
+    try {
+      const res = await axios.get('/api/edge/interact');
+      const action = res.data?.action;
+      if (action && action.action !== 'none') {
+        await executeAction(action);
+      } else {
+        addLog('💤 图谱平稳，端侧 AI 待机中...', 'info');
+      }
+    } catch (e) {
+      addLog(`⚠️ 端侧 AI 轮询失败: ${e.message}`, 'error');
+    }
+  };
+
+  useEffect(() => {
+    if (isRunning) {
+      addLog('🚀 端侧 AI Copilot 启动，开始自主监控...', 'info');
+      poll();
+      intervalRef.current = setInterval(poll, 5000);
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+        addLog('⏹ 端侧 AI Copilot 已停止。', 'info');
+      }
+    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [isRunning]);
+
+  const statusColor = { info: 'text-slate-400', success: 'text-emerald-400', warning: 'text-amber-400', error: 'text-rose-400' };
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-64px)] w-full bg-slate-950 text-slate-200 p-6 gap-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`p-3 rounded-2xl ${isRunning ? 'bg-indigo-500/20 border border-indigo-500/50' : 'bg-slate-800 border border-slate-700'}`}>
+            <Bot className={`w-7 h-7 ${isRunning ? 'text-indigo-400 animate-pulse' : 'text-slate-500'}`} />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-slate-100">端侧 AI Copilot</h2>
+            <p className="text-sm text-slate-500">基于本地边缘模型的自主诊断与参数纠偏代理</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={poll} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm text-slate-300 transition-colors">
+            <RotateCcw className="w-4 h-4" /> 立即触发
+          </button>
+          <button
+            onClick={() => setIsRunning(r => !r)}
+            className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-bold transition-all ${
+              isRunning
+                ? 'bg-rose-600/20 border border-rose-500/50 text-rose-400 hover:bg-rose-600/30'
+                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'
+            }`}
+          >
+            <Zap className={`w-4 h-4 ${isRunning ? 'animate-pulse' : ''}`} />
+            {isRunning ? '停止 Copilot' : '启动 Copilot'}
+          </button>
+        </div>
+      </div>
+
+      {correctionStatus && (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border text-sm font-medium ${
+          correctionStatus === 'applying' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 animate-pulse' :
+          correctionStatus === 'done'     ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                                           'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        }`}>
+          {correctionStatus === 'applying' && <Loader2 className="w-4 h-4 animate-spin" />}
+          {correctionStatus === 'done'     && <CheckCircle2 className="w-4 h-4" />}
+          {correctionStatus === 'applying' && '正在应用纠偏指令...'}
+          {correctionStatus === 'done'     && '参数纠偏完成，已同步至图谱节点。'}
+          {correctionStatus === 'error'    && '纠偏失败，请检查控制台日志。'}
+        </div>
+      )}
+
+      <div className="flex flex-1 gap-6 min-h-0">
+        <div className="w-80 shrink-0 flex flex-col gap-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">最新 AI 指令</h3>
+            {!lastAction || lastAction.action === 'none' ? (
+              <div className="flex flex-col items-center justify-center py-8 text-slate-600 gap-2">
+                <Bot className="w-10 h-10 opacity-30" />
+                <span className="text-sm">等待图谱事件...</span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold w-fit ${
+                  lastAction.action === 'correct_param' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                }`}>
+                  {lastAction.action === 'correct_param' ? <Zap className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  {lastAction.action === 'correct_param' ? '参数纠偏' : '节点巡查'}
+                </div>
+                <div className="text-sm">
+                  <span className="text-slate-500">目标节点: </span>
+                  <span className="font-mono text-indigo-300">{lastAction.node_id}</span>
+                </div>
+                {lastAction.action === 'correct_param' && (
+                  <div className="bg-slate-800 rounded-lg p-3 text-xs flex flex-col gap-1">
+                    <div className="flex justify-between"><span className="text-slate-500">参数</span><span className="font-mono text-amber-300">{lastAction.param}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">纠偏值</span><span className="font-mono text-emerald-300 font-bold">{lastAction.value}</span></div>
+                  </div>
+                )}
+                <p className="text-xs text-slate-500 italic">{lastAction.reason}</p>
+              </div>
+            )}
+          </div>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">模型状态</h3>
+            <div className="flex items-center gap-2 text-sm">
+              <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+              <span className={isRunning ? 'text-emerald-400' : 'text-slate-500'}>{isRunning ? '在线 — 每 5s 轮询' : '离线'}</span>
+            </div>
+            <div className="text-xs text-slate-600 mt-1 font-mono">Mode: Mock (no GGUF model)</div>
+            <div className="text-xs text-slate-600 mt-1">放入 .gguf 模型即可切换至真实推理</div>
+          </div>
+        </div>
+
+        <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl flex flex-col min-h-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">自主操作日志</h3>
+            <button onClick={() => setActionLog([])} className="text-xs text-slate-600 hover:text-slate-400">清空</button>
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-1.5 font-mono text-xs">
+            {actionLog.length === 0 && <div className="text-slate-600 text-center mt-10">日志为空，启动 Copilot 后在此实时显示操作记录。</div>}
+            {actionLog.map(entry => (
+              <div key={entry.id} className="flex items-start gap-3 leading-relaxed">
+                <span className="text-slate-600 shrink-0 tabular-nums">{entry.time}</span>
+                <span className={statusColor[entry.status]}>{entry.action}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('canvas');
   const [nodeSchemas, setNodeSchemas] = useState({});
@@ -786,6 +960,9 @@ export default function App() {
             <button onClick={() => setActiveTab('diagnosis')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'diagnosis' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
               <Activity className="w-4 h-4" /> 诊断与治理大屏
             </button>
+            <button onClick={() => setActiveTab('edge')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'edge' ? 'bg-indigo-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
+              <Bot className="w-4 h-4" /> 端侧 AI Copilot
+            </button>
           </div>
           <button onClick={handleExport} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/40 rounded text-sm font-bold transition-colors">
             <Download className="w-4 h-4" /> 导出端侧包
@@ -796,6 +973,7 @@ export default function App() {
       {activeTab === 'canvas' && <ReactFlowProvider><FlowCanvas schemas={nodeSchemas} edgeSchemas={edgeSchemas} /></ReactFlowProvider>}
       {activeTab === 'schema' && <SchemaManager nodeSchemas={nodeSchemas} edgeSchemas={edgeSchemas} algorithms={algorithms} refreshSchemas={fetchSchemas} />}
       {activeTab === 'diagnosis' && <ReactFlowProvider><DiagnosisDashboard /></ReactFlowProvider>}
+      {activeTab === 'edge' && <EdgeAICopilot />}
     </div>
   );
 }

@@ -14,6 +14,7 @@ from src.algo_engine import get_available_algorithms
 from src.schema_registry import SchemaRegistry
 from src.data_ingestion import DataPoint, ts_cache
 from src.rule_engine import RuleEngine
+from src.edge_inference import EdgeModelManager
 
 app = FastAPI(title="HTT Ontology Backend")
 
@@ -30,6 +31,7 @@ app.add_middleware(
 storage = LightGraphStorage()
 schema_registry = SchemaRegistry()
 rule_engine = RuleEngine(storage, schema_registry)
+edge_model_manager = EdgeModelManager()
 
 @app.post("/api/ingest")
 def ingest_data(point: DataPoint):
@@ -233,3 +235,44 @@ def extract_ontology(req: TextExtractionRequest):
         
     except Exception as e:
         return {"status": "error", "message": f"大模型解析失败: {str(e)}"}
+
+@app.get("/api/edge/interact")
+def edge_interact():
+    """
+    边缘端 AI 获取最新图谱状态并输出操作指令。
+    前端可轮询此接口，获取后执行指令。
+    """
+    graph_state = {
+        "nodes": [{"id": n_id, "data": data} for n_id, data in storage.get_all_nodes().items()],
+        "edges": [{"source": u, "target": v, "data": data} for u, v, data in storage.graph.edges(data=True)]
+    }
+    alerts = rule_engine.get_recent_alerts(limit=5)
+    action = edge_model_manager.generate_action(graph_state, alerts)
+    return {"status": "success", "action": action}
+
+@app.post("/api/edge/correct")
+def edge_correct(req: Dict[str, Any]):
+    """
+    执行大模型下发的纠偏指令。
+    参数例：{"node_id": "n1", "param": "cn", "value": 85}
+    """
+    node_id = req.get("node_id")
+    param = req.get("param")
+    value = req.get("value")
+    
+    if not all([node_id, param, value is not None]):
+        raise HTTPException(status_code=400, detail="Missing required parameters")
+        
+    # get_node returns a flat networkx attr dict (labels, plus all properties at top level)
+    node_data = storage.get_node(node_id)
+    if not node_data:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    # Extract labels and build updated properties dict
+    labels = node_data.get("labels", [])
+    properties = {k: v for k, v in node_data.items() if k != "labels"}
+    properties[param] = value
+    
+    storage.add_node(node_id, labels, properties)
+    
+    return {"status": "success", "message": f"Corrected {param} of {node_id} to {value}"}

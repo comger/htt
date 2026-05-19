@@ -50,6 +50,15 @@ class RuleEngine:
             return  # 节点不存在，忽略
 
         schema_id = node_data.get("schema_id")
+        
+        # 如果没有显式绑定 schema_id，尝试从 labels 中推断
+        if not schema_id:
+            labels = node_data.get("labels", [])
+            for label in labels:
+                if label in self.schema_registry.node_schemas:
+                    schema_id = label
+                    break
+
         if not schema_id:
             # 没有绑定 schema，直接入库
             ts_cache.push(point)
