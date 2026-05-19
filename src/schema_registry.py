@@ -122,6 +122,7 @@ DEFAULT_EDGE_SCHEMAS = {
         "id": "flows_into",
         "name": "产汇流输出",
         "description": "表达上游向下游的水流汇集关系",
+        "spatial_predicate": "Touches",
         "attributes": [
             {"name": "t3_lag_time_hr", "type": "number", "default": 1.0, "description": "水流时滞时间(小时)"}
         ]
@@ -130,6 +131,7 @@ DEFAULT_EDGE_SCHEMAS = {
         "id": "monitors_area",
         "name": "测算面雨量",
         "description": "传感器针对特定面积的测量权重",
+        "spatial_predicate": "Within",
         "attributes": [
             {"name": "weight", "type": "number", "default": 1.0, "description": "面积权重系数"}
         ]
@@ -138,6 +140,7 @@ DEFAULT_EDGE_SCHEMAS = {
         "id": "generic_link",
         "name": "普通关联",
         "description": "物理或逻辑上的无参数绑定",
+        "spatial_predicate": "None",
         "attributes": []
     }
 }

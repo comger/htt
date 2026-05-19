@@ -12,6 +12,8 @@ from src.graph_storage import LightGraphStorage, NodeModel, EdgeModel
 from src.templates import DEFAULT_TEMPLATES
 from src.algo_engine import get_available_algorithms
 from src.schema_registry import SchemaRegistry
+from src.data_ingestion import DataPoint, ts_cache
+from src.rule_engine import RuleEngine
 
 app = FastAPI(title="HTT Ontology Backend")
 
@@ -27,6 +29,61 @@ app.add_middleware(
 # 初始化引擎
 storage = LightGraphStorage()
 schema_registry = SchemaRegistry()
+rule_engine = RuleEngine(storage, schema_registry)
+
+@app.post("/api/ingest")
+def ingest_data(point: DataPoint):
+    """
+    接收实时传感器数据流。
+    此接口会触发 T1 和 T2 算法引擎。
+    """
+    rule_engine.process_point(point)
+    return {"status": "success"}
+
+@app.get("/api/alerts")
+def get_alerts(limit: int = 50):
+    """获取系统最新的拦截告警"""
+    return {"status": "success", "alerts": rule_engine.get_recent_alerts(limit)}
+
+@app.get("/api/stats")
+def get_stats():
+    """获取全局治理效果统计"""
+    total = rule_engine.total_processed_points
+    intercepts = len(rule_engine.alerts)
+    t1_count = sum(1 for a in rule_engine.alerts if a.level == "T1")
+    t2_count = sum(1 for a in rule_engine.alerts if a.level == "T2")
+    t3_count = sum(1 for a in rule_engine.alerts if a.level == "T3")
+    
+    health_score = 100
+    if total > 0:
+        health_score = max(0, 100 - (intercepts / total * 100))
+        
+    return {
+        "status": "success",
+        "stats": {
+            "total_ingested": total,
+            "total_intercepted": intercepts,
+            "t1_intercepts": t1_count,
+            "t2_intercepts": t2_count,
+            "t3_intercepts": t3_count,
+            "health_score": round(health_score, 1)
+        }
+    }
+
+@app.get("/api/nodes/{node_id}/timeseries")
+def get_node_timeseries(node_id: str):
+    """获取节点近期合规数据流与被拦截的红叉点"""
+    valid = ts_cache.get_recent(node_id, limit=50)
+    valid_points = [{"timestamp": p.timestamp, "value": p.value} for p in valid]
+    
+    node_alerts = [a for a in rule_engine.alerts if a.node_id == node_id][-50:]
+    intercepted_points = [{"timestamp": a.timestamp, "value": a.raw_value, "level": a.level, "message": a.message} for a in node_alerts]
+    
+    return {
+        "status": "success",
+        "valid_points": valid_points,
+        "intercepted_points": intercepted_points
+    }
 
 @app.get("/api/algorithms")
 def get_algorithms():
@@ -54,6 +111,27 @@ def update_edge_schema(schema_data: Dict[str, Any]):
     schema = schema_registry.upsert_edge_schema(schema_data)
     return {"status": "success", "schema": schema}
 
+@app.get("/api/export")
+def export_edge_bundle():
+    """导出用于边缘端推理的 JSON Bundle (Schemas + Graph)"""
+    import datetime
+    
+    nodes = [{"id": n_id, "data": data} for n_id, data in storage.get_all_nodes().items()]
+    edges = [{"source": u, "target": v, "data": data} for u, v, data in storage.graph.edges(data=True)]
+    
+    return {
+        "version": "1.5",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "schemas": {
+            "node_schemas": schema_registry.get_all_node_schemas(),
+            "edge_schemas": schema_registry.get_all_edge_schemas()
+        },
+        "graph": {
+            "nodes": nodes,
+            "edges": edges
+        }
+    }
+
 @app.get("/api/graph")
 def get_graph():
     """获取所有节点和边的拓扑数据，供前端 React Flow 渲染"""
@@ -67,10 +145,32 @@ def sync_node(node: NodeModel):
     storage.add_node(node.id, labels=node.labels, properties=node.properties)
     return {"status": "success"}
 
+@app.delete("/api/nodes/{node_id}")
+def delete_node(node_id: str):
+    storage.delete_node(node_id)
+    return {"status": "success"}
+
 @app.post("/api/edges")
 def sync_edge(edge: EdgeModel):
     """从可视化画布同步新增连线"""
     storage.add_edge(edge.source, edge.target, edge.type, edge.properties)
+    return {"status": "success"}
+
+@app.delete("/api/edges/{source}/{target}")
+def delete_edge(source: str, target: str):
+    storage.delete_edge(source, target)
+    return {"status": "success"}
+
+class BulkSyncRequest(BaseModel):
+    nodes: List[NodeModel]
+    edges: List[EdgeModel]
+
+@app.post("/api/graph/bulk")
+def bulk_sync_graph(req: BulkSyncRequest):
+    for n in req.nodes:
+        storage.add_node(n.id, labels=n.labels, properties=n.properties)
+    for e in req.edges:
+        storage.add_edge(e.source, e.target, e.type, e.properties)
     return {"status": "success"}
 
 @app.get("/api/templates")

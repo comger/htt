@@ -4,9 +4,10 @@ import ReactFlow, {
   MarkerType, ReactFlowProvider, useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Database, Activity, Sparkles, Send, Settings, X, Mic, Loader2, Trash2, Library, Network, ShieldCheck, Box, Waypoints } from 'lucide-react';
+import { Database, Activity, Sparkles, Send, Settings, X, Mic, Loader2, Trash2, Library, Network, ShieldCheck, Box, Waypoints, Download, Play, AlertTriangle, TrendingUp, Filter, CheckCircle2 } from 'lucide-react';
 import axios from 'axios';
 import dagre from 'dagre';
+import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 
 let id = 1000;
 const getId = () => `node_instance_${id++}`;
@@ -64,7 +65,15 @@ function FlowCanvas({ schemas, edgeSchemas }) {
 
   useEffect(() => { fetchGraph(); }, []);
 
-  const onConnect = useCallback((params) => setEdges((eds) => addEdge({ ...params, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, data: { type: "关联", properties: {}, schema_id: "generic_link" } }, eds)), [setEdges]);
+  const onConnect = useCallback((params) => {
+    const newEdgeData = { type: "关联", properties: {}, schema_id: "generic_link" };
+    setEdges((eds) => addEdge({ ...params, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, data: newEdgeData }, eds));
+    
+    axios.post('/api/edges', {
+      source: params.source, target: params.target, 
+      type: newEdgeData.type, properties: { ...newEdgeData.properties, schema_id: newEdgeData.schema_id }
+    }).catch(console.error);
+  }, [setEdges]);
 
   const handleAIBuild = async () => {
     if (!prompt.trim()) return;
@@ -85,6 +94,13 @@ function FlowCanvas({ schemas, edgeSchemas }) {
         }));
         const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements([...nodes, ...newNodes], [...edges, ...newEdges]);
         setNodes([...layoutedNodes]); setEdges([...layoutedEdges]);
+        
+        // Sync bulk to backend
+        axios.post('/api/graph/bulk', {
+          nodes: newNodes.map(n => ({ id: n.id, labels: n.data._labels || ["Sensor"], properties: n.data })),
+          edges: newEdges.map(e => ({ source: e.source, target: e.target, type: e.data.type, properties: e.data.properties }))
+        }).catch(console.error);
+        
         setTimeout(() => fitView(), 100);
         setPrompt("");
       } else { alert(res.data.message); }
@@ -108,6 +124,10 @@ function FlowCanvas({ schemas, edgeSchemas }) {
       data: { label: `新建 ${schema.name}`, name: `新建 ${schema.name}`, schema_id: schema.id, _labels: [schema.category], ...defaultProps },
     };
     setNodes((nds) => nds.concat(newNode));
+    
+    axios.post('/api/nodes', {
+      id: newNode.id, labels: newNode.data._labels, properties: newNode.data
+    }).catch(console.error);
   }, [screenToFlowPosition, setNodes, schemas]);
 
   const onDragStart = (e, schemaId) => {
@@ -118,9 +138,22 @@ function FlowCanvas({ schemas, edgeSchemas }) {
   const onNodeClick = (e, node) => { setSelectedEdge(null); setSelectedNode(node); };
   const onEdgeClick = (e, edge) => { setSelectedNode(null); setSelectedEdge(edge); };
   
+  const onNodesDelete = useCallback((deletedNodes) => {
+    deletedNodes.forEach(node => {
+      axios.delete(`/api/nodes/${node.id}`).catch(console.error);
+    });
+  }, []);
+
+  const onEdgesDelete = useCallback((deletedEdges) => {
+    deletedEdges.forEach(edge => {
+      axios.delete(`/api/edges/${edge.source}/${edge.target}`).catch(console.error);
+    });
+  }, []);
+
   const handleDeleteNode = () => {
     setNodes(nds => nds.filter(n => n.id !== selectedNode.id));
     setEdges(eds => eds.filter(e => e.source !== selectedNode.id && e.target !== selectedNode.id));
+    axios.delete(`/api/nodes/${selectedNode.id}`).catch(console.error);
     setSelectedNode(null);
   };
 
@@ -152,7 +185,8 @@ function FlowCanvas({ schemas, edgeSchemas }) {
     setEdges(eds => eds.map(e => e.id === selectedEdge.id ? { ...e, label: selectedEdge.data.type, data: { ...selectedEdge.data, properties: cleanProps } } : e));
     axios.post('/api/edges', {
       source: selectedEdge.source, target: selectedEdge.target, 
-      data: { type: selectedEdge.data.type, properties: cleanProps, schema_id: selectedEdge.data.schema_id }
+      type: selectedEdge.data.type,
+      properties: { ...cleanProps, schema_id: selectedEdge.data.schema_id }
     }).catch(console.error);
     setSelectedEdge(null);
   };
@@ -204,6 +238,7 @@ function FlowCanvas({ schemas, edgeSchemas }) {
         <ReactFlow
           nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onConnect={onConnect} onNodeClick={onNodeClick} onEdgeClick={onEdgeClick} onDrop={onDrop} onDragOver={onDragOver}
+          onNodesDelete={onNodesDelete} onEdgesDelete={onEdgesDelete}
           fitView deleteKeyCode={['Backspace', 'Delete']}
         >
           <Background color="#334155" gap={16} />
@@ -274,7 +309,14 @@ function FlowCanvas({ schemas, edgeSchemas }) {
                 {Object.values(edgeSchemas).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
               {selectedEdge.data?.schema_id && edgeSchemas[selectedEdge.data.schema_id] && (
-                <p className="text-xs text-slate-500 mt-2 italic">{edgeSchemas[selectedEdge.data.schema_id].description}</p>
+                <div className="mt-2 flex flex-col gap-1">
+                  <p className="text-xs text-slate-500 italic">{edgeSchemas[selectedEdge.data.schema_id].description}</p>
+                  {edgeSchemas[selectedEdge.data.schema_id].spatial_predicate && edgeSchemas[selectedEdge.data.schema_id].spatial_predicate !== 'None' && (
+                    <div className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-400/10 w-max px-2 py-1 rounded">
+                      <span>DE-9IM: {edgeSchemas[selectedEdge.data.schema_id].spatial_predicate}</span>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -410,8 +452,23 @@ function SchemaManager({ nodeSchemas, edgeSchemas, algorithms, refreshSchemas })
                 </div>
               )}
               {activeSubTab === 'edges' && (
-                <div className="col-span-2"><label className="text-xs text-slate-400 mb-1 block">关系说明 (Description)</label>
-                  <input className="w-full bg-slate-800 border border-slate-700 p-2 rounded text-sm" value={editingSchema.description || ''} onChange={e => setEditingSchema({...editingSchema, description: e.target.value})} />
+                <div className="col-span-2 grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">关系说明 (Description)</label>
+                    <input className="w-full bg-slate-800 border border-slate-700 p-2 rounded text-sm" value={editingSchema.description || ''} onChange={e => setEditingSchema({...editingSchema, description: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 mb-1 block">空间拓扑谓词 (DE-9IM)</label>
+                    <select className="w-full bg-slate-800 border border-slate-700 p-2 rounded text-sm text-indigo-300 font-bold" value={editingSchema.spatial_predicate || 'None'} onChange={e => setEditingSchema({...editingSchema, spatial_predicate: e.target.value})}>
+                      <option value="None">无空间关系 (None)</option>
+                      <option value="Contains">包含 (Contains ⊃)</option>
+                      <option value="Within">被包含 (Within ⊂)</option>
+                      <option value="Touches">接触/相接 (Touches)</option>
+                      <option value="Crosses">跨越 (Crosses ⨯)</option>
+                      <option value="Intersects">相交 (Intersects ∩)</option>
+                      <option value="Overlaps">重叠 (Overlaps)</option>
+                    </select>
+                  </div>
                 </div>
               )}
             </div>
@@ -469,6 +526,214 @@ function SchemaManager({ nodeSchemas, edgeSchemas, algorithms, refreshSchemas })
   );
 }
 
+function DiagnosisDashboard() {
+  const reactFlowWrapper = useRef(null);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const { fitView } = useReactFlow();
+  
+  const [alerts, setAlerts] = useState([]);
+  const [stats, setStats] = useState({ total_ingested: 0, total_intercepted: 0, health_score: 100 });
+  const [simNodeId, setSimNodeId] = useState("");
+  const [simValue, setSimValue] = useState("");
+  
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [timeSeriesData, setTimeSeriesData] = useState([]);
+
+  const fetchGraphAndAlerts = async () => {
+    try {
+      const [graphRes, alertsRes, statsRes] = await Promise.all([
+        axios.get('/api/graph'),
+        axios.get('/api/alerts'),
+        axios.get('/api/stats')
+      ]);
+      
+      const currentAlerts = alertsRes.data.alerts || [];
+      setAlerts(currentAlerts);
+      if (statsRes.data.stats) setStats(statsRes.data.stats);
+      
+      const alertNodeIds = new Set(currentAlerts.map(a => a.node_id));
+
+      const backendNodes = graphRes.data.nodes.map(n => ({
+        id: n.id,
+        position: { x: 0, y: 0 },
+        data: { label: n.data.name || n.id, ...n.data },
+        style: alertNodeIds.has(n.id) 
+          ? { border: '2px solid #ef4444', backgroundColor: '#7f1d1d', color: '#f87171', boxShadow: '0 0 20px rgba(239,68,68,0.5)' }
+          : { border: '1px solid #10b981', backgroundColor: '#064e3b', color: '#34d399' }
+      }));
+      const backendEdges = graphRes.data.edges.map(e => ({
+        id: `${e.source}-${e.target}`,
+        source: e.source, target: e.target, label: e.data.type, animated: true, markerEnd: { type: MarkerType.ArrowClosed },
+        style: { stroke: '#475569' }
+      }));
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(backendNodes, backendEdges);
+      setNodes([...layoutedNodes]); setEdges([...layoutedEdges]);
+    } catch (err) { console.error(err); }
+  };
+
+  useEffect(() => {
+    fetchGraphAndAlerts();
+    setTimeout(() => fitView(), 200);
+    const interval = setInterval(() => {
+      fetchGraphAndAlerts();
+      if (selectedNodeId) fetchNodeTimeSeries(selectedNodeId);
+    }, 2000); // 轮询拉取告警
+    return () => clearInterval(interval);
+  }, [selectedNodeId]); // Re-bind interval if selectedNodeId changes
+
+  const fetchNodeTimeSeries = async (nId) => {
+    try {
+      const res = await axios.get(`/api/nodes/${nId}/timeseries`);
+      const { valid_points, intercepted_points } = res.data;
+      
+      // Merge for Recharts: array of { time: 'HH:MM:SS', valid_val: 100, intercept_val: 150, reason: '...' }
+      const combined = [];
+      valid_points.forEach(p => {
+        combined.push({ 
+          timestamp: p.timestamp, 
+          time: new Date(p.timestamp * 1000).toLocaleTimeString(), 
+          valid_val: p.value 
+        });
+      });
+      intercepted_points.forEach(p => {
+        combined.push({
+          timestamp: p.timestamp,
+          time: new Date(p.timestamp * 1000).toLocaleTimeString(),
+          intercept_val: p.value,
+          reason: p.message,
+          level: p.level
+        });
+      });
+      combined.sort((a, b) => a.timestamp - b.timestamp);
+      setTimeSeriesData(combined);
+    } catch(e) { console.error(e); }
+  };
+
+  const handleNodeClick = (e, node) => {
+    setSelectedNodeId(node.id);
+    fetchNodeTimeSeries(node.id);
+  };
+
+  const handleSimulate = async () => {
+    if (!simNodeId || !simValue) return;
+    try {
+      await axios.post('/api/ingest', {
+        node_id: simNodeId,
+        timestamp: Date.now() / 1000,
+        value: parseFloat(simValue)
+      });
+      setSelectedNodeId(simNodeId);
+      fetchNodeTimeSeries(simNodeId);
+      setSimValue("");
+      fetchGraphAndAlerts();
+    } catch(e) { console.error(e); }
+  };
+
+  return (
+    <div className="flex h-[calc(100vh-64px)] w-full text-slate-200">
+      <aside className="w-96 bg-slate-900 border-r border-slate-800 flex flex-col z-20 shadow-2xl">
+        <div className="p-4 border-b border-slate-800 bg-slate-800/50">
+          <h2 className="font-bold text-slate-100 flex items-center gap-2 mb-4"><Activity className="w-5 h-5 text-indigo-400"/>数据注入模拟器</h2>
+          <div className="flex flex-col gap-2">
+            <select className="bg-slate-950 border border-slate-700 p-2 rounded text-sm text-slate-300" value={simNodeId} onChange={e => setSimNodeId(e.target.value)}>
+              <option value="">-- 选择要注入数据的节点 --</option>
+              {nodes.map(n => <option key={n.id} value={n.id}>{n.data.label} ({n.id})</option>)}
+            </select>
+            <div className="flex gap-2">
+              <input type="number" placeholder="输入模拟数值..." value={simValue} onChange={e => setSimValue(e.target.value)} className="flex-1 bg-slate-950 border border-slate-700 p-2 rounded text-sm" />
+              <button onClick={handleSimulate} className="bg-indigo-600 hover:bg-indigo-700 p-2 rounded text-sm font-bold flex items-center gap-1 transition-colors"><Play className="w-4 h-4"/>发送</button>
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-3 border-b border-slate-800">
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+            <h3 className="text-xs font-bold text-slate-400 mb-2">全局数据健康度 (Health Score)</h3>
+            <div className="flex items-end gap-2">
+              <span className={`text-3xl font-bold ${stats.health_score > 90 ? 'text-emerald-400' : stats.health_score > 70 ? 'text-amber-400' : 'text-rose-500'}`}>{stats.health_score}%</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+               <div className="bg-slate-900 rounded p-2 text-center border border-slate-800">
+                 <div className="text-[10px] text-slate-500">摄入总量</div><div className="text-sm font-bold text-slate-300">{stats.total_ingested}</div>
+               </div>
+               <div className="bg-slate-900 rounded p-2 text-center border border-slate-800">
+                 <div className="text-[10px] text-slate-500">拦截总量</div><div className="text-sm font-bold text-rose-400">{stats.total_intercepted}</div>
+               </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-3">
+          <h2 className="font-bold text-slate-100 flex items-center gap-2 mb-2"><AlertTriangle className="w-5 h-5 text-rose-500"/>实时告警拦截流</h2>
+          {alerts.length === 0 && <div className="text-slate-500 text-sm italic text-center mt-10">系统运行平稳，无拦截事件</div>}
+          {alerts.slice().reverse().map((alert, idx) => (
+            <div key={idx} className={`p-3 rounded border flex flex-col gap-1 shadow-lg ${alert.level === 'T3' ? 'bg-rose-950/40 border-rose-500/50' : 'bg-amber-950/40 border-amber-500/50'}`}>
+              <div className="flex justify-between items-center">
+                <span className={`text-xs font-bold px-2 py-0.5 rounded ${alert.level === 'T3' ? 'bg-rose-500 text-white' : 'bg-amber-500 text-black'}`}>{alert.level} | {alert.algo_id}</span>
+                <span className="text-xs text-slate-500">{new Date(alert.timestamp * 1000).toLocaleTimeString()}</span>
+              </div>
+              <div className="text-sm font-bold text-slate-200 mt-1">Node: {alert.node_id}</div>
+              <div className={`text-xs ${alert.level === 'T3' ? 'text-rose-300' : 'text-amber-300'}`}>{alert.message}</div>
+            </div>
+          ))}
+        </div>
+      </aside>
+      
+      <main className="flex-grow h-full relative bg-slate-950" ref={reactFlowWrapper}>
+        <div className="absolute top-4 right-4 z-10 bg-slate-900/80 p-3 rounded-lg border border-slate-700 text-xs text-slate-400 flex flex-col gap-2 backdrop-blur">
+           <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-500 border border-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>正常运行 (T1/T2 通关)</div>
+           <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-rose-500 border border-rose-400 shadow-[0_0_8px_rgba(239,68,68,0.8)] animate-pulse"></div>告警拦截 (机制阻断)</div>
+        </div>
+        <ReactFlow
+          nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          nodesDraggable={false} nodesConnectable={false} elementsSelectable={true}
+          onNodeClick={handleNodeClick}
+          fitView
+        >
+          <Background color="#1e293b" gap={16} />
+          <Controls className="bg-slate-800 fill-slate-200 border-slate-700" />
+        </ReactFlow>
+
+        {selectedNodeId && (
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[800px] h-64 bg-slate-900/95 backdrop-blur border border-slate-700 rounded-2xl shadow-2xl p-4 flex flex-col z-30 transition-all">
+             <div className="flex justify-between items-center mb-2">
+                <h3 className="font-bold text-slate-200 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-indigo-400"/> 节点时序深度剖析: {selectedNodeId}</h3>
+                <button onClick={() => setSelectedNodeId(null)} className="text-slate-500 hover:text-slate-300"><X className="w-4 h-4"/></button>
+             </div>
+             <div className="flex-1 w-full text-xs">
+                {timeSeriesData.length === 0 ? (
+                   <div className="flex h-full items-center justify-center text-slate-500">该节点暂无时序数据记录</div>
+                ) : (
+                   <ResponsiveContainer width="100%" height="100%">
+                     <ComposedChart data={timeSeriesData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                       <XAxis dataKey="time" stroke="#64748b" tick={{fontSize: 10}} />
+                       <YAxis stroke="#64748b" tick={{fontSize: 10}} domain={['auto', 'auto']} />
+                       <RechartsTooltip 
+                         contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
+                         itemStyle={{ color: '#cbd5e1' }}
+                         labelStyle={{ color: '#94a3b8', fontWeight: 'bold', marginBottom: '4px' }}
+                         formatter={(value, name, props) => {
+                           if (name === 'intercept_val') {
+                             return [<span className="text-rose-400 font-bold">{value} <br/><span className="text-[10px] text-rose-300">{props.payload.reason}</span></span>, '拦截值'];
+                           }
+                           return [value, '合法值'];
+                         }}
+                       />
+                       <Line type="monotone" dataKey="valid_val" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981', stroke: 'none' }} isAnimationActive={false} />
+                       <Scatter dataKey="intercept_val" fill="#ef4444" shape="cross" isAnimationActive={false} />
+                     </ComposedChart>
+                   </ResponsiveContainer>
+                )}
+             </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('canvas');
   const [nodeSchemas, setNodeSchemas] = useState({});
@@ -487,6 +752,22 @@ export default function App() {
     axios.get('/api/algorithms').then(res => setAlgorithms(res.data.algorithms));
   }, []);
 
+  const handleExport = async () => {
+    try {
+      const res = await axios.get('/api/export');
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(res.data, null, 2));
+      const downloadAnchorNode = document.createElement('a');
+      downloadAnchorNode.setAttribute("href",     dataStr);
+      downloadAnchorNode.setAttribute("download", `htt_edge_bundle_${new Date().getTime()}.json`);
+      document.body.appendChild(downloadAnchorNode); // required for firefox
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+    } catch (error) {
+      console.error("Export failed", error);
+      alert("导出失败，请检查网络或控制台");
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen w-full bg-slate-950 font-sans">
       <header className="h-16 border-b border-slate-800 bg-slate-900 flex items-center px-6 justify-between shrink-0">
@@ -494,21 +775,27 @@ export default function App() {
           <Database className="w-7 h-7 text-indigo-500" />
           <h1 className="font-bold text-xl text-slate-100 tracking-wide">HTT 物理本体引擎</h1>
         </div>
-        <div className="flex bg-slate-800 p-1 rounded-lg">
-          <button onClick={() => setActiveTab('canvas')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'canvas' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
-            <Network className="w-4 h-4" /> 实例拓扑画板
-          </button>
-          <button onClick={() => setActiveTab('schema')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'schema' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
-            <Library className="w-4 h-4" /> 本体定义字典 (Schemas)
+        <div className="flex items-center gap-6">
+          <div className="flex bg-slate-800 p-1 rounded-lg">
+            <button onClick={() => setActiveTab('canvas')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'canvas' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
+              <Network className="w-4 h-4" /> 实例拓扑画板
+            </button>
+            <button onClick={() => setActiveTab('schema')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'schema' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
+              <Library className="w-4 h-4" /> 本体定义字典 (Schemas)
+            </button>
+            <button onClick={() => setActiveTab('diagnosis')} className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'diagnosis' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}>
+              <Activity className="w-4 h-4" /> 诊断与治理大屏
+            </button>
+          </div>
+          <button onClick={handleExport} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/40 rounded text-sm font-bold transition-colors">
+            <Download className="w-4 h-4" /> 导出端侧包
           </button>
         </div>
       </header>
 
-      {activeTab === 'canvas' ? (
-        <ReactFlowProvider><FlowCanvas schemas={nodeSchemas} edgeSchemas={edgeSchemas} /></ReactFlowProvider>
-      ) : (
-        <SchemaManager nodeSchemas={nodeSchemas} edgeSchemas={edgeSchemas} algorithms={algorithms} refreshSchemas={fetchSchemas} />
-      )}
+      {activeTab === 'canvas' && <ReactFlowProvider><FlowCanvas schemas={nodeSchemas} edgeSchemas={edgeSchemas} /></ReactFlowProvider>}
+      {activeTab === 'schema' && <SchemaManager nodeSchemas={nodeSchemas} edgeSchemas={edgeSchemas} algorithms={algorithms} refreshSchemas={fetchSchemas} />}
+      {activeTab === 'diagnosis' && <ReactFlowProvider><DiagnosisDashboard /></ReactFlowProvider>}
     </div>
   );
 }

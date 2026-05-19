@@ -107,6 +107,23 @@ class LightGraphStorage:
         edge_model = EdgeModel(source=source, target=target, type=edge_type, properties=properties)
         self.save_edge_to_db(edge_model)
 
+    def delete_node(self, node_id: str):
+        if self.graph.has_node(node_id):
+            self.graph.remove_node(node_id)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+            cursor.execute("DELETE FROM edges WHERE source = ? OR target = ?", (node_id, node_id))
+            conn.commit()
+
+    def delete_edge(self, source: str, target: str):
+        if self.graph.has_edge(source, target):
+            self.graph.remove_edge(source, target)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM edges WHERE source = ? AND target = ?", (source, target))
+            conn.commit()
+
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         if self.graph.has_node(node_id):
             return self.graph.nodes[node_id]
