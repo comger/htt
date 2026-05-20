@@ -42,6 +42,104 @@ def ingest_data(point: DataPoint):
     rule_engine.process_point(point)
     return {"status": "success"}
 
+@app.post("/api/ingest/batch")
+def ingest_batch(points: List[DataPoint]):
+    """批量注入数据流"""
+    for point in points:
+        rule_engine.process_point(point)
+    return {"status": "success", "processed": len(points)}
+
+@app.post("/api/ingest/scenario")
+def ingest_scenario(req: Dict[str, Any]):
+    """
+    注入预定义场景数据，用于演示 HTT 拦截效果。
+    scenario_id: 'normal' | 't1_overflow' | 't2_rate_spike' | 't3_causal'
+    node_id: 目标节点
+    """
+    import time as time_mod
+    scenario_id = req.get("scenario_id")
+    node_id = req.get("node_id")
+    
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+    node_data = storage.get_node(node_id)
+    if not node_data:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    # 读取物理极限
+    max_val = float(node_data.get("t1_range_max") or node_data.get("t1_max_height") or node_data.get("t1_max_flow") or 100.0)
+    min_val = float(node_data.get("t1_range_min") or 0.0)
+    normal_val = min_val + (max_val - min_val) * 0.4
+    
+    now = time_mod.time()
+    points_to_inject = []
+    results = []
+    
+    if scenario_id == "normal":
+        # 注入 10 个正常范围内的读数（稳定值略有波动）
+        import random, math
+        for i in range(10):
+            val = normal_val + math.sin(i * 0.8) * (max_val * 0.05)
+            points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - (10 - i) * 6, value=round(val, 2)))
+        results.append(f"注入 10 个正常读数，范围 [{round(normal_val*0.9,1)}, {round(normal_val*1.1,1)}]")
+    
+    elif scenario_id == "t1_overflow":
+        # 先注入 3 个正常值，再注入 3 个超限值，再注入 2 个回归正常
+        for i in range(3):
+            points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 40 + i*5, value=round(normal_val, 2)))
+        for i in range(3):
+            overflow = max_val * (1.15 + i * 0.1)
+            points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 25 + i*5, value=round(overflow, 2)))
+        for i in range(2):
+            points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 10 + i*5, value=round(normal_val, 2)))
+        results.append(f"T1 超限演示: 3次正常 → 3次超限(>{round(max_val,1)}) → 2次恢复")
+    
+    elif scenario_id == "t2_rate_spike":
+        # 先平稳，然后短时间内急剧跳变（模拟传感器干扰或设备故障）
+        baseline = normal_val
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 60, value=round(baseline, 2)))
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 50, value=round(baseline + max_val * 0.05, 2)))
+        # 突变：60秒内变化了50%的量程
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 5, value=round(baseline + max_val * 0.55, 2)))
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 2, value=round(baseline, 2)))
+        results.append(f"T2 突变演示: 60s内激增 {round(max_val*0.5,1)} (触发突变速率拦截)")
+    
+    elif scenario_id == "t3_causal":
+        # 需要向多个相关节点注入数据以触发 T3 机理验证
+        # 找出与该节点关联的下游节点
+        downstream_nodes = list(storage.graph.successors(node_id))
+        
+        # 上游节点注入极高值（强降雨）
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 30, value=round(normal_val, 2)))
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 20, value=round(max_val * 0.85, 2)))
+        points_to_inject.append(DataPoint(node_id=node_id, timestamp=now - 10, value=round(max_val * 0.90, 2)))
+        
+        # 下游节点保持"异常低值"（违背物理因果：上游暴雨，下游应该涨水，却未变化）
+        for dn in downstream_nodes[:1]:
+            dn_data = storage.get_node(dn)
+            if dn_data:
+                dn_max = float(dn_data.get("t1_range_max") or dn_data.get("t2_warning_level") or 10.0)
+                dn_normal = dn_max * 0.2  # 保持极低值不涨
+                for i in range(3):
+                    points_to_inject.append(DataPoint(node_id=dn, timestamp=now - 25 + i*10, value=round(dn_normal, 2)))
+        
+        if downstream_nodes:
+            results.append(f"T3 机理演示: 上游节点激增 → 下游节点({downstream_nodes[0]})异常平稳 → 因果逻辑矛盾")
+        else:
+            results.append(f"T3 演示: 上游节点高值注入（需图谱中有下游节点以触发因果校验）")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown scenario_id: {scenario_id}")
+    
+    for p in points_to_inject:
+        rule_engine.process_point(p)
+    
+    return {
+        "status": "success", 
+        "scenario_id": scenario_id,
+        "injected_count": len(points_to_inject),
+        "summary": results
+    }
+
 @app.get("/api/alerts")
 def get_alerts(limit: int = 50):
     """获取系统最新的拦截告警"""
