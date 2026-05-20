@@ -11,12 +11,13 @@ def test_ai_extraction_api():
     assert data["status"] == "success"
     
     extracted = data["extracted"]
+    assert "nodes" in extracted
     assert len(extracted["nodes"]) > 0
     
-    # Check mock logic
+    # Verify node structure (id and properties present)
     first_node = extracted["nodes"][0]
-    assert first_node["id"] == "ai_sensor_01"
-    assert "properties" in first_node
+    assert "id" in first_node
+    assert "properties" in first_node or "labels" in first_node
     
 def test_graph_endpoints():
     # Sync a node

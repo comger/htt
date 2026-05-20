@@ -39,6 +39,23 @@ class RuleEngine:
     def get_recent_alerts(self, limit=50):
         return [a.to_dict() for a in self.alerts[-limit:]]
 
+    def _resolve_schema(self, node_data: Dict[str, Any]):
+        """从节点数据中解析绑定的 Schema。优先使用 schema_id，否则按 label 模糊匹配。"""
+        schema_id = node_data.get("schema_id")
+        if schema_id and schema_id in self.schema_registry.node_schemas:
+            return self.schema_registry.node_schemas[schema_id]
+        
+        labels = node_data.get("labels", [])
+        for label in labels:
+            # 精确匹配
+            if label in self.schema_registry.node_schemas:
+                return self.schema_registry.node_schemas[label]
+            # 模糊匹配：例如 label="WaterLevel" 匹配 schema "WaterLevelSensor"
+            for sid, schema in self.schema_registry.node_schemas.items():
+                if label.lower() in sid.lower() or sid.lower() in label.lower():
+                    return schema
+        return None
+
     def process_point(self, point: DataPoint):
         """
         处理单个实时数据流节点，按序执行 T1、T2 校验。
@@ -49,52 +66,47 @@ class RuleEngine:
         if not node_data:
             return  # 节点不存在，忽略
 
-        schema_id = node_data.get("schema_id")
-        
-        # 如果没有显式绑定 schema_id，尝试从 labels 中推断
-        if not schema_id:
-            labels = node_data.get("labels", [])
-            for label in labels:
-                if label in self.schema_registry.node_schemas:
-                    schema_id = label
-                    break
+        schema = self._resolve_schema(node_data)
+        algorithms = schema.get("bound_algorithms", []) if schema else []
 
-        if not schema_id:
-            # 没有绑定 schema，直接入库
-            ts_cache.push(point)
-            return
-
-        schema = self.schema_registry.node_schemas.get(schema_id)
-        if not schema:
-            ts_cache.push(point)
-            return
-
-        # 遍历挂载的算子
-        algorithms = schema.get("bound_algorithms", [])
-        
-        # 执行 T1 检查
+        # ── T1: 物理极限检查 ──────────────────────────────────────────────
+        # 优先从 schema 算子执行，兜底直接读取节点 t1_* 属性
+        t1_ran = False
         for algo in algorithms:
-            algo_id = algo.get("algo_id")
-            if algo_id == "t1_physical_limit":
+            if algo.get("algo_id") == "t1_physical_limit":
+                t1_ran = True
                 if not self._check_t1_physical_limit(point, node_data, algo.get("params", {})):
-                    return # 拦截，不入缓存
-                
-        # 执行 T2 检查
+                    return
+        if not t1_ran:
+            # 兜底：节点自身携带 t1_range_max
+            if node_data.get("t1_range_max") is not None:
+                if not self._check_t1_physical_limit(point, node_data, {}):
+                    return
+
+        # ── T2: 数理速率/统计检查 ─────────────────────────────────────────
+        t2_ran = False
         for algo in algorithms:
             algo_id = algo.get("algo_id")
             if algo_id == "t2_rate_of_change":
+                t2_ran = True
                 if not self._check_t2_rate_of_change(point, node_data, algo.get("params", {})):
                     return
-            elif algo_id == "t2_seasonal_max":
-                pass # TODO: 需要历史库支持
             elif algo_id == "t2_3sigma":
+                t2_ran = True
                 if not self._check_t2_3sigma(point):
                     return
-                    
-        # 校验通过，存入时序缓存区
+        if not t2_ran:
+            # 兜底：节点自身携带 t2_warning_level 或 t2_alert_1h 等属性
+            # 使用 t2_warning_level 作为速率阈值（单位：量程/小时）
+            if node_data.get("t2_warning_level") is not None:
+                synthetic_params = {"max_delta_per_hour": float(node_data["t2_warning_level"]) * 0.5}
+                if not self._check_t2_rate_of_change(point, node_data, synthetic_params):
+                    return
+
+        # ── 校验通过，存入时序缓存区 ──────────────────────────────────────
         ts_cache.push(point)
 
-        # 启动 T3 机理评估
+        # ── T3: 因果机理评估 ──────────────────────────────────────────────
         self.t3_engine.evaluate_t3(point, node_data, algorithms)
 
     def _check_t1_physical_limit(self, point: DataPoint, node_data: Dict[str, Any], algo_params: Dict[str, Any]) -> bool:
